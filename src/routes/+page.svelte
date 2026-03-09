@@ -2,9 +2,6 @@
     import { onMount } from "svelte";
     import PlaceAutocomplete from "$lib/PlaceAutocomplete.svelte";
 
-    // モード管理
-    let isOutdoorMode = false;
-
     // API設定 (環境変数から取得)
     const GOOGLE_MAPS_API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
 
@@ -23,26 +20,9 @@
     let aframeLoaded = false;
 
     // 目的地情報の表示用
-    $: displayDest = isOutdoorMode
-        ? destinationName || "未設定"
-        : "2階のcomomoスペース";
-    $: distanceText = isOutdoorMode
-        ? routeWaypoints.length > 0
-            ? "ルート表示中"
-            : "検索してください"
-        : "約 15m";
-
-    // 屋内用経路データ (静的)
-    const indoorPathPoints = [
-        { x: 0, y: -0.5, z: -1, color: "#007bff" },
-        { x: 0.5, y: -0.5, z: -2, color: "#0096ff" },
-        { x: 1, y: -0.5, z: -3, color: "#00b4ff" },
-        { x: 0.8, y: -0.5, z: -4, color: "#00d2ff" },
-        { x: 0.2, y: -0.5, z: -5, color: "#00f0ff" },
-        { x: -0.5, y: -0.5, z: -6, color: "#00ffcc" },
-        { x: -1, y: -0.5, z: -7, color: "#00ff99" },
-        { x: -0.8, y: -0.5, z: -8, color: "#33ff66" },
-    ];
+    $: displayDest = destinationName || "目的地未設定";
+    $: statusText =
+        routeWaypoints.length > 0 ? "ルート案内中" : "目的地を検索してください";
 
     onMount(() => {
         // 現在地取得の試行
@@ -116,7 +96,6 @@
                         maneuver: step.maneuver,
                     }));
 
-                    isOutdoorMode = true;
                     isLoading = false;
                 } else {
                     throw new Error("ルートの取得に失敗しました: " + status);
@@ -127,10 +106,6 @@
             console.error(e);
             isLoading = false;
         }
-    }
-
-    function toggleMode() {
-        isOutdoorMode = !isOutdoorMode;
     }
 </script>
 
@@ -149,108 +124,75 @@
 
 <div class="ar-container">
     {#if aframeLoaded}
-        {#if isOutdoorMode}
-            <!-- 屋外モード (GPS) -->
-            <a-scene
-                embedded
-                vr-mode-ui="enabled: false"
-                arjs="sourceType: webcam; videoTexture: true; debugUIEnabled: false;"
-                renderer="antialias: true; alpha: true;"
-                device-orientation-permission-ui="enabled: false"
-            >
-                <a-camera gps-camera rotation-reader></a-camera>
+        <!-- AR Scene (Always GPS) -->
+        <a-scene
+            embedded
+            vr-mode-ui="enabled: false"
+            arjs="sourceType: webcam; videoTexture: true; debugUIEnabled: false;"
+            renderer="antialias: true; alpha: true;"
+            device-orientation-permission-ui="enabled: false"
+        >
+            <a-camera
+                gps-camera="maxDistance: 2000; minDistance: 1;"
+                rotation-reader
+                far="3000"
+            ></a-camera>
 
-                <!-- 地上のガイドライン (リボン) -->
-                {#each routeWaypoints as point, i}
-                    <a-entity
-                        gps-entity-place="latitude: {point.lat}; longitude: {point.lon};"
-                        position="0 -1.5 0"
-                    >
-                        <a-plane
-                            rotation="-90 0 0"
-                            width="2"
-                            height="4"
-                            material="color: #00d2ff; opacity: 0.4; transparent: true; emissive: #00d2ff; emissiveIntensity: 1"
-                        ></a-plane>
-                    </a-entity>
-                {/each}
-
-                <!-- 曲がり角の巨大矢印 (マリオカート風) -->
-                {#each routeSteps as step}
-                    <a-entity
-                        gps-entity-place="latitude: {step.lat}; longitude: {step.lon};"
-                        position="0 2 0"
-                    >
-                        <a-image
-                            src="/chevron.png"
-                            width="5"
-                            height="5"
-                            look-at="[gps-camera]"
-                            animation="property: position; to: 0 3 0; dir: alternate; dur: 1000; loop: true; easing: easeInOutSine"
-                        ></a-image>
-                    </a-entity>
-                {/each}
-
-                {#if routeWaypoints.length > 0}
-                    <!-- 最終目的地のゴールポスト -->
-                    <a-entity
-                        gps-entity-place="latitude: {routeWaypoints[
-                            routeWaypoints.length - 1
-                        ].lat}; longitude: {routeWaypoints[
-                            routeWaypoints.length - 1
-                        ].lon};"
-                        position="0 0 0"
-                    >
-                        <a-cylinder
-                            radius="0.5"
-                            height="30"
-                            position="0 15 0"
-                            material="color: #ff3366; opacity: 0.3; transparent: true; emissive: #ff3366"
-                        ></a-cylinder>
-                        <a-entity
-                            geometry="primitive: torus; radius: 4; radiusTubular: 0.3"
-                            material="color: #ff3366; emissive: #ff3366"
-                            position="0 15 0"
-                            animation="property: rotation; to: 360 360 0; loop: true; dur: 5000"
-                        ></a-entity>
-                    </a-entity>
-                {/if}
-            </a-scene>
-        {:else}
-            <!-- 屋内モード (Marker) -->
-            <a-scene
-                embedded
-                arjs="sourceType: webcam; debugUIEnabled: false;"
-                renderer="logarithmicDepthBuffer: true;"
-                vr-mode-ui="enabled: false"
-                device-orientation-permission-ui="enabled: false"
-            >
-                <a-marker preset="hiro">
-                    <a-box
-                        position="0 0.5 0"
-                        material="opacity: 0.5; transparent: true; color: #4CC3D9"
-                        animation="property: rotation; to: 0 360 0; loop: true; dur: 3000"
-                    ></a-box>
-                    <a-text value="START" align="center" position="0 1.2 0"
-                    ></a-text>
-                </a-marker>
-
-                <a-entity position="0 0 0">
-                    {#each indoorPathPoints as point, i}
-                        <a-box
-                            position="{point.x} {point.y} {point.z}"
-                            scale="0.3 0.1 0.3"
-                            material="color: {point.color}; emissive: {point.color}; emissiveIntensity: 0.5; opacity: 0.8; transparent: true"
-                            animation="property: position; dir: alternate; dur: 2000; easing: easeInOutSine; loop: true; to: {point.x} {point.y +
-                                0.1} {point.z}"
-                        >
-                        </a-box>
-                    {/each}
+            <!-- ルート上の道しるべ (ネオンブルーの小球) -->
+            {#each routeWaypoints as point, i}
+                <a-entity
+                    gps-entity-place="latitude: {point.lat}; longitude: {point.lon};"
+                    position="0 -1.5 0"
+                >
+                    <a-sphere
+                        radius="0.4"
+                        material="color: #00FFFF; opacity: 0.8; transparent: true; emissive: #00FFFF; emissiveIntensity: 2"
+                        animation="property: scale; to: 1.2 1.2 1.2; dir: alternate; dur: 1000; loop: true; easing: easeInOutSine"
+                    ></a-sphere>
                 </a-entity>
+            {/each}
 
-                <a-entity camera></a-entity>
-            </a-scene>
-        {/if}
+            <!-- 曲がり角の巨大矢印 (マリオカート風) -->
+            {#each routeSteps as step}
+                <a-entity
+                    gps-entity-place="latitude: {step.lat}; longitude: {step.lon};"
+                    position="0 2 0"
+                >
+                    <a-image
+                        src="/chevron.png"
+                        width="5"
+                        height="5"
+                        look-at="[gps-camera]"
+                        animation="property: position; to: 0 3 0; dir: alternate; dur: 1000; loop: true; easing: easeInOutSine"
+                    ></a-image>
+                </a-entity>
+            {/each}
+
+            {#if routeWaypoints.length > 0}
+                <!-- 最終目的地のゴールポスト -->
+                <a-entity
+                    gps-entity-place="latitude: {routeWaypoints[
+                        routeWaypoints.length - 1
+                    ].lat}; longitude: {routeWaypoints[
+                        routeWaypoints.length - 1
+                    ].lon};"
+                    position="0 0 0"
+                >
+                    <a-cylinder
+                        radius="0.5"
+                        height="30"
+                        position="0 15 0"
+                        material="color: #ff3366; opacity: 0.3; transparent: true; emissive: #ff3366"
+                    ></a-cylinder>
+                    <a-entity
+                        geometry="primitive: torus; radius: 4; radiusTubular: 0.3"
+                        material="color: #ff3366; emissive: #ff3366"
+                        position="0 15 0"
+                        animation="property: rotation; to: 360 360 0; loop: true; dur: 5000"
+                    ></a-entity>
+                </a-entity>
+            {/if}
+        </a-scene>
     {:else}
         <div class="loading-screen">
             <div class="spinner"></div>
@@ -259,59 +201,57 @@
     {/if}
 </div>
 
-<!-- 2D UI Overlay -->
+<!-- Modern UI Overlay (Apple Style) -->
 <div class="ui-overlay">
-    <div class="top-bar">
-        <div class="logo">NaviLine</div>
-        <div class="mode-badge" class:outdoor={isOutdoorMode}>
-            {isOutdoorMode ? "屋外 GPS" : "屋内 Marker"}
-        </div>
-    </div>
-
-    <div class="bottom-controls">
-        <div class="nav-card">
-            <div class="search-form">
-                <PlaceAutocomplete on:select={handlePlaceSelected} />
-                {#if isLoading}
-                    <div class="loader-inline">...</div>
-                {/if}
-            </div>
-
-            <div class="info">
-                <div class="dest-group">
-                    <span class="label">目的地</span>
-                    <span class="value">{displayDest}へ</span>
-                </div>
-                <div class="dist-group">
-                    <span class="label">ステータス</span>
-                    <span class="value">{distanceText}</span>
-                </div>
-            </div>
-
-            {#if errorMessage}
-                <div class="error-msg">{errorMessage}</div>
+    <!-- Top Search Area -->
+    <header class="top-nav">
+        <div class="search-container">
+            <PlaceAutocomplete on:select={handlePlaceSelected} />
+            {#if isLoading}
+                <div class="loader"></div>
             {/if}
-
-            <div class="hint">
-                {#if isOutdoorMode}
-                    <p>前方の赤いピンを目指して進んでください</p>
-                {:else}
-                    <p>足元のブロックに沿ってお進みください</p>
-                {/if}
-            </div>
-
-            <button class="toggle-btn" on:click={toggleMode}>
-                {isOutdoorMode ? "屋内モードに切替" : "屋外モードに切替"}
-            </button>
         </div>
-    </div>
+    </header>
+
+    <!-- Bottom Status Area (Ultra-Slim Bar) -->
+    <footer class="bottom-nav">
+        <div class="slim-bar">
+            <div class="dest-badge">
+                <span class="dot"></span>
+                <span class="value">{displayDest}</span>
+            </div>
+            <div class="status-badge">
+                <p class="value-small">{statusText}</p>
+            </div>
+        </div>
+    </footer>
 </div>
 
 <style>
+    :global(html),
     :global(body) {
         margin: 0;
+        padding: 0;
+        width: 100vw;
+        height: 100vh;
         overflow: hidden;
         background-color: #000;
+        position: fixed;
+    }
+
+    /* AR.js and A-Frame forced full-screen */
+    :global(video),
+    :global(canvas) {
+        position: absolute !important;
+        top: 0 !important;
+        left: 0 !important;
+        width: 100vw !important;
+        height: 100vh !important;
+        object-fit: cover !important;
+        z-index: 0 !important;
+    }
+
+    :global(body) {
         font-family:
             "Inter",
             -apple-system,
@@ -334,144 +274,104 @@
         width: 100%;
         height: 100%;
         pointer-events: none;
-        z-index: 10;
+        z-index: 999;
         display: flex;
         flex-direction: column;
         justify-content: space-between;
-        padding: 20px;
         box-sizing: border-box;
+        /* iPhone Notch Support */
+        padding-top: env(safe-area-inset-top);
+        padding-bottom: env(safe-area-inset-bottom);
     }
 
-    .top-bar {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        pointer-events: auto;
-    }
-
-    .logo {
-        color: white;
-        font-weight: 900;
-        font-size: 1.5rem;
-        text-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
-    }
-
-    .mode-badge {
-        padding: 6px 14px;
-        border-radius: 30px;
-        font-size: 0.8rem;
-        font-weight: 700;
-        background: rgba(0, 123, 255, 0.3);
-        color: #4da3ff;
-        border: 1px solid rgba(0, 123, 255, 0.5);
-        backdrop-filter: blur(10px);
-    }
-
-    .mode-badge.outdoor {
-        background: rgba(255, 51, 102, 0.3);
-        color: #ff6699;
-        border-color: rgba(255, 51, 102, 0.5);
-    }
-
-    .bottom-controls {
-        pointer-events: auto;
-    }
-
-    .nav-card {
-        background: rgba(20, 20, 20, 0.7);
-        backdrop-filter: blur(25px);
-        -webkit-backdrop-filter: blur(25px);
-        border: 1px solid rgba(255, 255, 255, 0.1);
-        border-radius: 28px;
+    /* Top Nav (Search Bar) */
+    .top-nav {
         padding: 24px;
-        color: white;
-        box-shadow: 0 15px 40px rgba(0, 0, 0, 0.4);
+        background: linear-gradient(
+            to bottom,
+            rgba(0, 0, 0, 0.4) 0%,
+            transparent 100%
+        );
+        pointer-events: auto;
     }
 
-    .info {
-        display: flex;
-        justify-content: space-between;
-        margin-bottom: 20px;
-    }
-
-    .label {
-        display: block;
-        font-size: 0.75rem;
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-        opacity: 0.6;
-        margin-bottom: 4px;
-    }
-
-    .value {
-        font-size: 1.2rem;
-        font-weight: 800;
-    }
-
-    .hint {
-        background: rgba(255, 255, 255, 0.05);
-        padding: 12px 16px;
-        border-radius: 16px;
-        margin-bottom: 20px;
-    }
-
-    .hint p {
-        margin: 0;
-        font-size: 0.9rem;
-        font-weight: 500;
-    }
-
-    .toggle-btn {
-        width: 100%;
-        padding: 16px;
-        border-radius: 18px;
-        border: none;
-        background: linear-gradient(135deg, #007bff, #00d2ff);
-        color: white;
-        font-weight: 700;
-        font-size: 1rem;
-        cursor: pointer;
-        transition: transform 0.2s;
-    }
-
-    .toggle-btn:active {
-        transform: scale(0.97);
-    }
-
-    /* 検索フォームのスタイル */
-    .search-form {
+    .search-container {
+        max-width: 600px;
+        margin: 0 auto;
         display: flex;
         align-items: center;
         gap: 12px;
-        margin-bottom: 20px;
+        background: rgba(255, 255, 255, 0.15);
+        backdrop-filter: blur(20px);
+        -webkit-backdrop-filter: blur(20px);
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        border-radius: 20px;
+        padding: 8px 16px;
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
     }
 
-    .loader-inline {
-        color: #00d2ff;
-        font-weight: bold;
-        animation: blink 1s infinite;
+    /* Bottom Nav (Ultra-Slim Bar) */
+    .bottom-nav {
+        padding: 0 16px 16px 16px;
+        pointer-events: auto;
     }
 
-    @keyframes blink {
-        0%,
-        100% {
-            opacity: 1;
-        }
-        50% {
-            opacity: 0.3;
-        }
+    .slim-bar {
+        max-width: 600px;
+        height: 54px;
+        margin: 0 auto;
+        background: rgba(0, 0, 0, 0.5);
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        border: 1px solid rgba(255, 255, 255, 0.15);
+        border-radius: 40px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 20px;
+        color: white;
+        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
     }
 
-    .error-msg {
-        color: #ff4d4d;
-        font-size: 0.8rem;
-        margin-bottom: 15px;
-        font-weight: bold;
+    .dest-badge {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        max-width: 60%;
     }
 
-    /* AR.js cleanup */
-    :global(.a-canvas) {
-        z-index: 1 !important;
+    .dot {
+        width: 8px;
+        height: 8px;
+        background: #00d2ff;
+        border-radius: 50%;
+        box-shadow: 0 0 10px #00d2ff;
+        flex-shrink: 0;
+    }
+
+    .value {
+        font-size: 1rem;
+        font-weight: 700;
+        margin: 0;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    .value-small {
+        font-size: 0.85rem;
+        font-weight: 500;
+        margin: 0;
+        color: rgba(255, 255, 255, 0.7);
+    }
+
+    .loader {
+        width: 18px;
+        height: 18px;
+        border: 2px solid rgba(255, 255, 255, 0.1);
+        border-top-color: #00d2ff;
+        border-radius: 50%;
+        animation: spin 0.8s linear infinite;
     }
 
     .loading-screen {
@@ -486,25 +386,27 @@
         align-items: center;
         background: black;
         color: white;
-        z-index: 2;
+        z-index: 20;
     }
 
     .spinner {
-        width: 40px;
-        height: 40px;
+        width: 44px;
+        height: 44px;
         border: 4px solid rgba(255, 255, 255, 0.1);
-        border-top: 4px solid #00d2ff;
+        border-top-color: #00d2ff;
         border-radius: 50%;
         animation: spin 1s linear infinite;
-        margin-bottom: 20px;
+        margin-bottom: 24px;
     }
 
     @keyframes spin {
-        0% {
-            transform: rotate(0deg);
-        }
-        100% {
+        to {
             transform: rotate(360deg);
         }
+    }
+
+    /* AR.js cleanup */
+    :global(.a-canvas) {
+        z-index: 1 !important;
     }
 </style>
