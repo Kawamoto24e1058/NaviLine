@@ -11,7 +11,8 @@
     let routeSteps = []; // 曲がり角などのアクションポイント
     let isLoading = false;
     let errorMessage = "";
-    let userLocation = { lat: 34.7024, lon: 135.4959 }; // デフォルト: 大阪駅
+    let userLocation = null; // 初期値なし（許可後にセット）
+    let locationReady = false;
 
     // Google Maps Services
     let directionsService;
@@ -25,16 +26,6 @@
         routeWaypoints.length > 0 ? "ルート案内中" : "目的地を検索してください";
 
     onMount(() => {
-        // 現在地取得の試行
-        if (navigator.geolocation) {
-            navigator.geolocation.getCurrentPosition((pos) => {
-                userLocation = {
-                    lat: pos.coords.latitude,
-                    lon: pos.coords.longitude,
-                };
-            });
-        }
-
         // Google Maps SDKのロードを待って初期化
         const checkGoogle = setInterval(() => {
             if (window.google && window.google.maps) {
@@ -52,15 +43,61 @@
         }, 100);
     });
 
+    async function requestLocationPerms() {
+        return new Promise((resolve, reject) => {
+            if (!navigator.geolocation) {
+                reject(
+                    new Error(
+                        "お使いのブラウザは位置情報をサポートしていません。",
+                    ),
+                );
+                return;
+            }
+
+            navigator.geolocation.getCurrentPosition(
+                (pos) => {
+                    userLocation = {
+                        lat: pos.coords.latitude,
+                        lon: pos.coords.longitude,
+                    };
+                    locationReady = true;
+                    resolve(userLocation);
+                },
+                (err) => {
+                    let msg = "位置情報の取得に失敗しました。";
+                    if (err.code === 1)
+                        msg = "位置情報の利用を許可してください。";
+                    reject(new Error(msg));
+                },
+                { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 },
+            );
+        });
+    }
+
     async function handlePlaceSelected(event) {
         const { lat, lon, name } = event.detail;
         destinationName = name;
-        await fetchRoute(lat, lon);
+        errorMessage = "";
+        isLoading = true;
+
+        try {
+            // 1. 位置情報の許可を確実に取得
+            await requestLocationPerms();
+            // 2. 取得した現在地を起点にルート検索
+            await fetchRoute(lat, lon);
+        } catch (e) {
+            errorMessage = e.message;
+            isLoading = false;
+        }
     }
 
     async function fetchRoute(destLat, destLon) {
         if (!directionsService) {
             errorMessage = "Google Maps API がロードされていません。";
+            return;
+        }
+        if (!userLocation) {
+            errorMessage = "現在地が取得できていません。";
             return;
         }
 
@@ -131,12 +168,15 @@
             arjs="sourceType: webcam; videoTexture: true; debugUIEnabled: false;"
             renderer="antialias: true; alpha: true;"
             device-orientation-permission-ui="enabled: false"
+            id="ar-scene"
         >
-            <a-camera
-                gps-camera="maxDistance: 2000; minDistance: 1;"
-                rotation-reader
-                far="3000"
-            ></a-camera>
+            {#if locationReady}
+                <a-camera
+                    gps-camera="maxDistance: 2000; minDistance: 1;"
+                    rotation-reader
+                    far="3000"
+                ></a-camera>
+            {/if}
 
             <!-- ルート上の道しるべ (ネオンブルーの小球) -->
             {#each routeWaypoints as point, i}
@@ -193,16 +233,28 @@
                 </a-entity>
             {/if}
         </a-scene>
-    {:else}
+    {:else if locationReady}
         <div class="loading-screen">
             <div class="spinner"></div>
             <p>AR エンジンを起動中...</p>
+        </div>
+    {:else}
+        <div class="loading-screen">
+            <div class="spinner"></div>
+            <p>目的地を検索してナビを開始してください</p>
         </div>
     {/if}
 </div>
 
 <!-- Modern UI Overlay (Apple Style) -->
 <div class="ui-overlay">
+    <!-- Error Banner (Global) -->
+    {#if errorMessage}
+        <div class="error-toast">
+            <span class="error-pill">{errorMessage}</span>
+        </div>
+    {/if}
+
     <!-- Top Search Area -->
     <header class="top-nav">
         <div class="search-container">
@@ -233,7 +285,7 @@
         margin: 0;
         padding: 0;
         width: 100vw;
-        height: 100vh;
+        height: 100dvh;
         overflow: hidden;
         background-color: #000;
         position: fixed;
@@ -246,7 +298,7 @@
         top: 0 !important;
         left: 0 !important;
         width: 100vw !important;
-        height: 100vh !important;
+        height: 100dvh !important;
         object-fit: cover !important;
         z-index: 0 !important;
     }
@@ -263,7 +315,7 @@
         top: 0;
         left: 0;
         width: 100vw;
-        height: 100vh;
+        height: 100dvh;
         z-index: 1;
     }
 
@@ -286,12 +338,11 @@
 
     /* Top Nav (Search Bar) */
     .top-nav {
-        padding: 24px;
-        background: linear-gradient(
-            to bottom,
-            rgba(0, 0, 0, 0.4) 0%,
-            transparent 100%
-        );
+        position: fixed;
+        top: calc(10px + env(safe-area-inset-top));
+        left: 0;
+        width: 100%;
+        padding: 0 24px;
         pointer-events: auto;
     }
 
@@ -312,8 +363,15 @@
 
     /* Bottom Nav (Ultra-Slim Bar) */
     .bottom-nav {
-        padding: 0 16px 16px 16px;
+        position: fixed;
+        bottom: calc(20px + env(safe-area-inset-bottom));
+        left: 50%;
+        transform: translateX(-50%);
+        width: 90%;
+        max-width: 400px;
+        padding: 0;
         pointer-events: auto;
+        z-index: 999;
     }
 
     .slim-bar {
@@ -402,6 +460,42 @@
     @keyframes spin {
         to {
             transform: rotate(360deg);
+        }
+    }
+
+    /* Error Toast (Apple Style) */
+    .error-toast {
+        position: fixed;
+        top: calc(80px + env(safe-area-inset-top));
+        left: 0;
+        width: 100%;
+        display: flex;
+        justify-content: center;
+        pointer-events: none;
+        z-index: 1000;
+        animation: slideDown 0.4s ease-out;
+    }
+
+    .error-pill {
+        background: rgba(255, 59, 48, 0.9);
+        backdrop-filter: blur(10px);
+        color: white;
+        padding: 8px 20px;
+        border-radius: 20px;
+        font-size: 0.9rem;
+        font-weight: 600;
+        box-shadow: 0 4px 15px rgba(255, 59, 48, 0.3);
+        pointer-events: auto;
+    }
+
+    @keyframes slideDown {
+        from {
+            transform: translateY(-20px);
+            opacity: 0;
+        }
+        to {
+            transform: translateY(0);
+            opacity: 1;
         }
     }
 
