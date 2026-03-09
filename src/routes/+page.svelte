@@ -11,6 +11,7 @@
     // 状態管理
     let destinationName = "";
     let routeWaypoints = [];
+    let routeSteps = []; // 曲がり角などのアクションポイント
     let isLoading = false;
     let errorMessage = "";
     let userLocation = { lat: 34.7024, lon: 135.4959 }; // デフォルト: 大阪駅
@@ -99,16 +100,21 @@
 
             directionsService.route(request, (result, status) => {
                 if (status === google.maps.DirectionsStatus.OK) {
-                    // 経路の座標を抽出
+                    // 経路の座標を抽出 (地上リボン用)
                     const path = result.routes[0].overview_path;
+                    routeWaypoints = path.map((point) => ({
+                        lat: point.lat(),
+                        lon: point.lng(),
+                    }));
 
-                    // 表示を軽くするために間引きを行う
-                    routeWaypoints = path
-                        .filter((_, i) => i % 2 === 0)
-                        .map((point) => ({
-                            lat: point.lat(),
-                            lon: point.lng(),
-                        }));
+                    // 曲がり角（ステップ）を抽出 (矢印用)
+                    const legs = result.routes[0].legs[0];
+                    routeSteps = legs.steps.map((step) => ({
+                        lat: step.start_location.lat(),
+                        lon: step.start_location.lng(),
+                        instruction: step.instructions,
+                        maneuver: step.maneuver,
+                    }));
 
                     isOutdoorMode = true;
                     isLoading = false;
@@ -154,37 +160,57 @@
             >
                 <a-camera gps-camera rotation-reader></a-camera>
 
-                <!-- 動的なルートWaypoints -->
+                <!-- 地上のガイドライン (リボン) -->
                 {#each routeWaypoints as point, i}
                     <a-entity
                         gps-entity-place="latitude: {point.lat}; longitude: {point.lon};"
+                        position="0 -1.5 0"
                     >
-                        <a-box
-                            scale="2 0.5 2"
-                            material="color: #00d2ff; opacity: 0.7; emissive: #00d2ff; emissiveIntensity: 0.5"
-                        ></a-box>
-                        <a-text
-                            value={i + 1}
-                            align="center"
-                            position="0 1 0"
-                            scale="5 5 5"
-                        ></a-text>
+                        <a-plane
+                            rotation="-90 0 0"
+                            width="2"
+                            height="4"
+                            material="color: #00d2ff; opacity: 0.4; transparent: true; emissive: #00d2ff; emissiveIntensity: 1"
+                        ></a-plane>
+                    </a-entity>
+                {/each}
+
+                <!-- 曲がり角の巨大矢印 (マリオカート風) -->
+                {#each routeSteps as step}
+                    <a-entity
+                        gps-entity-place="latitude: {step.lat}; longitude: {step.lon};"
+                        position="0 2 0"
+                    >
+                        <a-image
+                            src="/chevron.png"
+                            width="5"
+                            height="5"
+                            look-at="[gps-camera]"
+                            animation="property: position; to: 0 3 0; dir: alternate; dur: 1000; loop: true; easing: easeInOutSine"
+                        ></a-image>
                     </a-entity>
                 {/each}
 
                 {#if routeWaypoints.length > 0}
-                    <!-- 最終目的地に目立つピンを配置 -->
+                    <!-- 最終目的地のゴールポスト -->
                     <a-entity
                         gps-entity-place="latitude: {routeWaypoints[
                             routeWaypoints.length - 1
                         ].lat}; longitude: {routeWaypoints[
                             routeWaypoints.length - 1
                         ].lon};"
+                        position="0 0 0"
                     >
+                        <a-cylinder
+                            radius="0.5"
+                            height="30"
+                            position="0 15 0"
+                            material="color: #ff3366; opacity: 0.3; transparent: true; emissive: #ff3366"
+                        ></a-cylinder>
                         <a-entity
-                            geometry="primitive: torus; radius: 3; radiusTubular: 0.2"
+                            geometry="primitive: torus; radius: 4; radiusTubular: 0.3"
                             material="color: #ff3366; emissive: #ff3366"
-                            position="0 10 0"
+                            position="0 15 0"
                             animation="property: rotation; to: 360 360 0; loop: true; dur: 5000"
                         ></a-entity>
                     </a-entity>
