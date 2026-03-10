@@ -522,13 +522,16 @@
         padding-bottom: env(safe-area-inset-bottom);
     }
 
-    /* Top Nav (Search Bar) */
+    /* Top Nav (Search Bar Area) */
     .top-nav {
         position: fixed;
-        top: calc(10px + env(safe-area-inset-top));
+        top: 0;
         left: 0;
         width: 100%;
-        padding: 0 24px;
+        /* ノッチ領域 + 余白 */
+        padding-top: calc(env(safe-area-inset-top) + 12px);
+        padding-left: 24px;
+        padding-right: 24px;
         pointer-events: auto;
     }
 
@@ -547,10 +550,11 @@
         box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
     }
 
-    /* Bottom Nav (Ultra-Slim Bar) */
+    /* Bottom Nav (Status / Start Area) */
     .bottom-nav {
         position: fixed;
-        bottom: calc(20px + env(safe-area-inset-bottom));
+        /* ホームインジケータ + 余白 */
+        bottom: calc(env(safe-area-inset-bottom) + 20px);
         left: 50%;
         transform: translateX(-50%);
         width: 90%;
