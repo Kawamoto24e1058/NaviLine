@@ -1,5 +1,5 @@
 <script>
-    import { onMount } from "svelte";
+    import { onMount, onDestroy } from "svelte";
     import PlaceAutocomplete from "$lib/PlaceAutocomplete.svelte";
 
     // API設定 (環境変数から取得)
@@ -18,36 +18,49 @@
     let selectedPlace = null; // 最後に選択された場所
     let isNavigating = false; // 案内が開始されたか
 
+    // デバッグ・診断用データ
+    let gpsTelemetry = { status: "未起動", lat: null, lon: null };
+    let apiTelemetry = { status: "待機中", points: 0, steps: 0 };
+
     // Google Maps Services
     let directionsService;
 
     // A-Frame ロード状態
     let aframeLoaded = false;
+    let isSceneLoaded = false; // シーン本体のマウント完了フラグ
 
     // 目的地情報の表示用
     $: displayDest = destinationName || "目的地未設定";
     $: statusText =
         routeWaypoints.length > 0 ? "ルート案内中" : "目的地を検索してください";
 
+    let googleCheckInterval;
+    let aframeCheckInterval;
+
     onMount(() => {
         // Google Maps SDKのロードを待って初期化
-        const checkGoogle = setInterval(() => {
+        googleCheckInterval = setInterval(() => {
             if (window.google && window.google.maps) {
-                clearInterval(checkGoogle);
+                clearInterval(googleCheckInterval);
                 directionsService = new google.maps.DirectionsService();
             }
         }, 100);
 
         // A-Frame と AR.js のロードを待機
-        const checkAFRAME = setInterval(() => {
+        aframeCheckInterval = setInterval(() => {
             if (window.AFRAME) {
-                clearInterval(checkAFRAME);
+                clearInterval(aframeCheckInterval);
                 aframeLoaded = true;
             }
         }, 100);
 
         // 初回ロード時にサイレントで位置情報を試行
         trySilentInit();
+    });
+
+    onDestroy(() => {
+        if (googleCheckInterval) clearInterval(googleCheckInterval);
+        if (aframeCheckInterval) clearInterval(aframeCheckInterval);
     });
 
     async function trySilentInit() {
@@ -70,6 +83,11 @@
             },
             { timeout: 2000 },
         );
+    }
+
+    function handleSceneLoaded() {
+        console.log("AR Scene Loaded");
+        isSceneLoaded = true;
     }
 
     async function handleInitialInteraction() {
@@ -103,11 +121,17 @@
                 return;
             }
 
+            gpsTelemetry.status = "取得中...";
             navigator.geolocation.getCurrentPosition(
                 (pos) => {
                     userLocation = {
                         lat: pos.coords.latitude,
                         lon: pos.coords.longitude,
+                    };
+                    gpsTelemetry = {
+                        status: "成功",
+                        lat: pos.coords.latitude.toFixed(6),
+                        lon: pos.coords.longitude.toFixed(6),
                     };
                     locationReady = true;
                     resolve(userLocation);
@@ -116,9 +140,16 @@
                     let msg = "位置情報の取得に失敗しました。";
                     if (err.code === 1)
                         msg = "位置情報の利用を許可してください。";
+
+                    // タイムアウトなどのエラーでも、既存のキャッシュがあれば「成功扱いのステータス」にする準備
+                    gpsTelemetry.status = `取得エラー: ${err.message} (コード: ${err.code})`;
                     reject(new Error(msg));
                 },
-                { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 },
+                {
+                    enableHighAccuracy: false,
+                    timeout: 10000,
+                    maximumAge: 60000,
+                },
             );
         });
     }
@@ -138,9 +169,23 @@
         isLoading = true;
 
         try {
-            // 1. 位置情報の許可を確実に取得 (タップ直後のため高確率で成功)
-            await requestLocationPerms();
-            // 2. 取得した現在地を起点にルート検索
+            // 1. 位置情報の取得を試行
+            try {
+                await requestLocationPerms();
+            } catch (e) {
+                // 取得に失敗（タイムアウト等）しても、キャッシュがあれば続行する
+                if (userLocation) {
+                    console.warn(
+                        "GPS取得失敗。キャッシュされた座標で続行します:",
+                        e.message,
+                    );
+                    gpsTelemetry.status = "成功 (キャッシュ利用)";
+                } else {
+                    // キャッシュもない場合は本当のエラー
+                    throw e;
+                }
+            }
+            // 2. 取得した現在地を起点にルート検索 (userLocation があることが保証されている)
             await fetchRoute(selectedPlace.lat, selectedPlace.lon);
             isNavigating = true;
         } catch (e) {
@@ -174,7 +219,11 @@
                 travelMode: google.maps.TravelMode.WALKING,
             };
 
+            apiTelemetry.status = "リクエスト中...";
             directionsService.route(request, (result, status) => {
+                isLoading = false;
+                apiTelemetry.status = status;
+
                 if (status === google.maps.DirectionsStatus.OK) {
                     // 経路の座標を抽出 (地上リボン用)
                     const path = result.routes[0].overview_path;
@@ -192,9 +241,14 @@
                         maneuver: step.maneuver,
                     }));
 
-                    isLoading = false;
+                    apiTelemetry.points = routeWaypoints.length;
+                    apiTelemetry.steps = routeSteps.length;
                 } else {
-                    throw new Error("ルートの取得に失敗しました: " + status);
+                    errorMessage = "ルートの取得に失敗しました: " + status;
+                    if (status === "REQUEST_DENIED") {
+                        errorMessage +=
+                            " (APIキーの設定または制限を確認してください)";
+                    }
                 }
             });
         } catch (e) {
@@ -228,67 +282,76 @@
             renderer="antialias: true; alpha: true;"
             device-orientation-permission-ui="enabled: false"
             id="ar-scene"
+            on:loaded={handleSceneLoaded}
         >
             <a-camera
                 gps-camera="maxDistance: 3000; minDistance: 1;"
                 rotation-reader
                 far="3000"
-            ></a-camera>
+            >
+                <!-- 描画テスト用: カメラの5m前に常に表示される赤い立方体 -->
+                <a-box position="0 0 -5" color="red" scale="0.5 0.5 0.5"
+                ></a-box>
+            </a-camera>
 
-            <!-- ルート上の道しるべ (マリオカート風の巨大ネオン球) -->
-            {#each routeWaypoints as point, i}
-                <a-entity
-                    gps-entity-place="latitude: {point.lat}; longitude: {point.lon};"
-                >
-                    <a-sphere
-                        radius="1"
-                        position="0 -1.5 0"
-                        scale="2 2 2"
-                        material="color: #00FFFF; opacity: 0.8; transparent: true; emissive: #00FFFF; emissiveIntensity: 2"
-                        animation="property: scale; to: 2.2 2.2 2.2; dir: alternate; dur: 1000; loop: true; easing: easeInOutSine"
-                    ></a-sphere>
-                </a-entity>
-            {/each}
+            {#if isSceneLoaded}
+                <!-- ルート上の道しるべ (マリオカート風の巨大ネオン球) -->
+                {#if routeWaypoints.length > 0}
+                    {#each routeWaypoints as point}
+                        <a-entity
+                            gps-entity-place="latitude: {point.lat}; longitude: {point.lon};"
+                        >
+                            <a-sphere
+                                radius="1"
+                                position="0 -1.5 0"
+                                scale="2 2 2"
+                                material="color: #00FFFF; opacity: 0.8; transparent: true; emissive: #00FFFF; emissiveIntensity: 2"
+                                animation="property: scale; to: 2.2 2.2 2.2; dir: alternate; dur: 1000; loop: true; easing: easeInOutSine"
+                            ></a-sphere>
+                        </a-entity>
+                    {/each}
 
-            <!-- 曲がり角の巨大矢印 (マリオカート風) -->
-            {#each routeSteps as step}
-                <a-entity
-                    gps-entity-place="latitude: {step.lat}; longitude: {step.lon};"
-                    position="0 2 0"
-                >
-                    <a-image
-                        src="/chevron.png"
-                        width="5"
-                        height="5"
-                        look-at="[gps-camera]"
-                        animation="property: position; to: 0 3 0; dir: alternate; dur: 1000; loop: true; easing: easeInOutSine"
-                    ></a-image>
-                </a-entity>
-            {/each}
-
-            {#if routeWaypoints.length > 0}
-                <!-- 最終目的地のゴールポスト -->
-                <a-entity
-                    gps-entity-place="latitude: {routeWaypoints[
-                        routeWaypoints.length - 1
-                    ].lat}; longitude: {routeWaypoints[
-                        routeWaypoints.length - 1
-                    ].lon};"
-                    position="0 0 0"
-                >
-                    <a-cylinder
-                        radius="0.5"
-                        height="30"
-                        position="0 15 0"
-                        material="color: #ff3366; opacity: 0.3; transparent: true; emissive: #ff3366"
-                    ></a-cylinder>
+                    <!-- 最終目的地のゴールポスト -->
                     <a-entity
-                        geometry="primitive: torus; radius: 4; radiusTubular: 0.3"
-                        material="color: #ff3366; emissive: #ff3366"
-                        position="0 15 0"
-                        animation="property: rotation; to: 360 360 0; loop: true; dur: 5000"
-                    ></a-entity>
-                </a-entity>
+                        gps-entity-place="latitude: {routeWaypoints[
+                            routeWaypoints.length - 1
+                        ].lat}; longitude: {routeWaypoints[
+                            routeWaypoints.length - 1
+                        ].lon};"
+                        position="0 0 0"
+                    >
+                        <a-cylinder
+                            radius="0.5"
+                            height="30"
+                            position="0 15 0"
+                            material="color: #ff3366; opacity: 0.3; transparent: true; emissive: #ff3366"
+                        ></a-cylinder>
+                        <a-entity
+                            geometry="primitive: torus; radius: 4; radiusTubular: 0.3"
+                            material="color: #ff3366; emissive: #ff3366"
+                            position="0 15 0"
+                            animation="property: rotation; to: 360 360 0; loop: true; dur: 5000"
+                        ></a-entity>
+                    </a-entity>
+                {/if}
+
+                <!-- 曲がり角の巨大矢印 (マリオカート風) -->
+                {#if routeSteps.length > 0}
+                    {#each routeSteps as step}
+                        <a-entity
+                            gps-entity-place="latitude: {step.lat}; longitude: {step.lon};"
+                            position="0 2 0"
+                        >
+                            <a-image
+                                src="/chevron.png"
+                                width="5"
+                                height="5"
+                                look-at="[gps-camera]"
+                                animation="property: position; to: 0 3 0; dir: alternate; dur: 1000; loop: true; easing: easeInOutSine"
+                            ></a-image>
+                        </a-entity>
+                    {/each}
+                {/if}
             {/if}
         </a-scene>
     {:else if isLoading}
@@ -345,6 +408,40 @@
 
     <!-- Bottom Status Area (Ultra-Slim Bar) -->
     <footer class="bottom-nav">
+        <!-- Debug Diagnostics Card -->
+        <div class="debug-card">
+            <div class="debug-item">
+                <span class="label">GPS:</span>
+                <span class="val"
+                    >{gpsTelemetry.status}
+                    {gpsTelemetry.lat
+                        ? `(${gpsTelemetry.lat}, ${gpsTelemetry.lon})`
+                        : ""}</span
+                >
+            </div>
+            <div class="debug-item">
+                <span class="label">SCENE:</span>
+                <span class="val {isSceneLoaded ? '' : 'err'}"
+                    >{isSceneLoaded ? "READY" : "LOADING..."}</span
+                >
+            </div>
+            <div class="debug-item">
+                <span class="label">API:</span>
+                <span
+                    class="val {apiTelemetry.status !== 'OK' &&
+                    apiTelemetry.status !== '待機中'
+                        ? 'err'
+                        : ''}">{apiTelemetry.status}</span
+                >
+            </div>
+            <div class="debug-item">
+                <span class="label">データ:</span>
+                <span class="val"
+                    >点: {apiTelemetry.points} / 角: {apiTelemetry.steps}</span
+                >
+            </div>
+        </div>
+
         {#if selectedPlace && !isNavigating && !isLoading}
             <button class="start-btn" on:click={startNavigation}>
                 <span class="btn-text">案内開始</span>
@@ -357,7 +454,12 @@
                 <span class="value">{displayDest}</span>
             </div>
             <div class="status-badge">
-                <p class="value-small">{statusText}</p>
+                <p class="value-small">
+                    {statusText}
+                    {#if routeWaypoints.length > 0}
+                        | ポイント: {routeWaypoints.length}個
+                    {/if}
+                </p>
             </div>
         </div>
     </footer>
@@ -661,6 +763,42 @@
             transform: scale(1);
             opacity: 0.8;
         }
+    }
+
+    /* Debug Diagnostics Card */
+    .debug-card {
+        width: 100%;
+        background: rgba(0, 0, 0, 0.6);
+        backdrop-filter: blur(10px);
+        -webkit-backdrop-filter: blur(10px);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 16px;
+        padding: 12px;
+        margin-bottom: 8px;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        pointer-events: auto;
+    }
+
+    .debug-item {
+        display: flex;
+        justify-content: space-between;
+        font-size: 0.75rem;
+        font-family: monospace;
+    }
+
+    .debug-item .label {
+        color: rgba(255, 255, 255, 0.5);
+    }
+
+    .debug-item .val {
+        color: #00ff00;
+        text-align: right;
+    }
+
+    .debug-item .val.err {
+        color: #ff3b30;
     }
 
     /* AR.js cleanup */
