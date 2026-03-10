@@ -13,6 +13,10 @@
     let errorMessage = "";
     let userLocation = null; // 初期値なし（許可後にセット）
     let locationReady = false;
+    let showTapOverlay = false;
+    let isInitialized = false;
+    let selectedPlace = null; // 最後に選択された場所
+    let isNavigating = false; // 案内が開始されたか
 
     // Google Maps Services
     let directionsService;
@@ -41,10 +45,55 @@
                 aframeLoaded = true;
             }
         }, 100);
+
+        // 初回ロード時にサイレントで位置情報を試行
+        trySilentInit();
     });
+
+    async function trySilentInit() {
+        if (!navigator.geolocation) return;
+
+        // ブラウザによってはユーザー動作がないとプロンプトすら出ない場合があるため
+        // 一度極短タイムアウトで試行して、必要なら「タップ開始」を表示する
+        navigator.geolocation.getCurrentPosition(
+            (pos) => {
+                userLocation = {
+                    lat: pos.coords.latitude,
+                    lon: pos.coords.longitude,
+                };
+                locationReady = true;
+                isInitialized = true;
+            },
+            (err) => {
+                // 許可が必要、またはジェスチャが必要な場合
+                showTapOverlay = true;
+            },
+            { timeout: 2000 },
+        );
+    }
+
+    async function handleInitialInteraction() {
+        if (isInitialized) return;
+        showTapOverlay = false;
+        isLoading = true;
+        try {
+            await requestLocationPerms();
+            isInitialized = true;
+        } catch (e) {
+            errorMessage = e.message;
+        } finally {
+            isLoading = false;
+        }
+    }
 
     async function requestLocationPerms() {
         return new Promise((resolve, reject) => {
+            // HTTPS チェック
+            if (!window.isSecureContext) {
+                reject(new Error("位置情報の取得にはHTTPS接続が必要です。"));
+                return;
+            }
+
             if (!navigator.geolocation) {
                 reject(
                     new Error(
@@ -75,18 +124,28 @@
     }
 
     async function handlePlaceSelected(event) {
-        const { lat, lon, name } = event.detail;
-        destinationName = name;
+        selectedPlace = event.detail;
+        destinationName = selectedPlace.name;
+        errorMessage = "";
+        routeWaypoints = []; // 以前のルートをクリア
+        isNavigating = false;
+    }
+
+    async function startNavigation() {
+        if (!selectedPlace) return;
+
         errorMessage = "";
         isLoading = true;
 
         try {
-            // 1. 位置情報の許可を確実に取得
+            // 1. 位置情報の許可を確実に取得 (タップ直後のため高確率で成功)
             await requestLocationPerms();
             // 2. 取得した現在地を起点にルート検索
-            await fetchRoute(lat, lon);
+            await fetchRoute(selectedPlace.lat, selectedPlace.lon);
+            isNavigating = true;
         } catch (e) {
             errorMessage = e.message;
+        } finally {
             isLoading = false;
         }
     }
@@ -160,7 +219,7 @@
 </svelte:head>
 
 <div class="ar-container">
-    {#if aframeLoaded}
+    {#if aframeLoaded && locationReady}
         <!-- AR Scene (Always GPS) -->
         <a-scene
             embedded
@@ -170,24 +229,23 @@
             device-orientation-permission-ui="enabled: false"
             id="ar-scene"
         >
-            {#if locationReady}
-                <a-camera
-                    gps-camera="maxDistance: 2000; minDistance: 1;"
-                    rotation-reader
-                    far="3000"
-                ></a-camera>
-            {/if}
+            <a-camera
+                gps-camera="maxDistance: 3000; minDistance: 1;"
+                rotation-reader
+                far="3000"
+            ></a-camera>
 
-            <!-- ルート上の道しるべ (ネオンブルーの小球) -->
+            <!-- ルート上の道しるべ (マリオカート風の巨大ネオン球) -->
             {#each routeWaypoints as point, i}
                 <a-entity
                     gps-entity-place="latitude: {point.lat}; longitude: {point.lon};"
-                    position="0 -1.5 0"
                 >
                     <a-sphere
-                        radius="0.4"
+                        radius="1"
+                        position="0 -1.5 0"
+                        scale="2 2 2"
                         material="color: #00FFFF; opacity: 0.8; transparent: true; emissive: #00FFFF; emissiveIntensity: 2"
-                        animation="property: scale; to: 1.2 1.2 1.2; dir: alternate; dur: 1000; loop: true; easing: easeInOutSine"
+                        animation="property: scale; to: 2.2 2.2 2.2; dir: alternate; dur: 1000; loop: true; easing: easeInOutSine"
                     ></a-sphere>
                 </a-entity>
             {/each}
@@ -233,10 +291,14 @@
                 </a-entity>
             {/if}
         </a-scene>
-    {:else if locationReady}
+    {:else if isLoading}
         <div class="loading-screen">
             <div class="spinner"></div>
-            <p>AR エンジンを起動中...</p>
+            {#if !locationReady}
+                <p>位置情報を取得中...</p>
+            {:else}
+                <p>AR エンジンを起動中...</p>
+            {/if}
         </div>
     {:else}
         <div class="loading-screen">
@@ -248,6 +310,22 @@
 
 <!-- Modern UI Overlay (Apple Style) -->
 <div class="ui-overlay">
+    <!-- First Tap Guide (Invisible Trigger) -->
+    {#if showTapOverlay}
+        <div
+            class="tap-overlay"
+            on:click={handleInitialInteraction}
+            on:keydown={(e) => e.key === "Enter" && handleInitialInteraction()}
+            role="button"
+            tabindex="0"
+        >
+            <div class="tap-hint">
+                <div class="tap-icon">👆</div>
+                <p>画面をタップしてARを開始</p>
+            </div>
+        </div>
+    {/if}
+
     <!-- Error Banner (Global) -->
     {#if errorMessage}
         <div class="error-toast">
@@ -267,6 +345,12 @@
 
     <!-- Bottom Status Area (Ultra-Slim Bar) -->
     <footer class="bottom-nav">
+        {#if selectedPlace && !isNavigating && !isLoading}
+            <button class="start-btn" on:click={startNavigation}>
+                <span class="btn-text">案内開始</span>
+            </button>
+        {/if}
+
         <div class="slim-bar">
             <div class="dest-badge">
                 <span class="dot"></span>
@@ -372,6 +456,42 @@
         padding: 0;
         pointer-events: auto;
         z-index: 999;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 16px;
+    }
+
+    .start-btn {
+        width: 200px;
+        height: 50px;
+        background: rgba(0, 210, 255, 0.3);
+        backdrop-filter: blur(20px);
+        -webkit-backdrop-filter: blur(20px);
+        border: 1px solid rgba(0, 210, 255, 0.5);
+        border-radius: 25px;
+        color: #00d2ff;
+        font-size: 1.1rem;
+        font-weight: 800;
+        cursor: pointer;
+        box-shadow: 0 8px 32px rgba(0, 210, 255, 0.2);
+        animation: floatUp 0.6s ease-out;
+        transition: transform 0.2s;
+    }
+
+    .start-btn:active {
+        transform: scale(0.95);
+    }
+
+    @keyframes floatUp {
+        from {
+            transform: translateY(20px);
+            opacity: 0;
+        }
+        to {
+            transform: translateY(0);
+            opacity: 1;
+        }
     }
 
     .slim-bar {
@@ -496,6 +616,50 @@
         to {
             transform: translateY(0);
             opacity: 1;
+        }
+    }
+
+    /* Tap to Start Overlay */
+    .tap-overlay {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100vw;
+        height: 100dvh;
+        background: rgba(0, 0, 0, 0.4);
+        backdrop-filter: blur(10px);
+        -webkit-backdrop-filter: blur(10px);
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        z-index: 2000;
+        cursor: pointer;
+        pointer-events: auto;
+    }
+
+    .tap-hint {
+        text-align: center;
+        color: white;
+        animation: pulse 2s infinite;
+    }
+
+    .tap-icon {
+        font-size: 3rem;
+        margin-bottom: 16px;
+    }
+
+    @keyframes pulse {
+        0% {
+            transform: scale(1);
+            opacity: 0.8;
+        }
+        50% {
+            transform: scale(1.1);
+            opacity: 1;
+        }
+        100% {
+            transform: scale(1);
+            opacity: 0.8;
         }
     }
 
